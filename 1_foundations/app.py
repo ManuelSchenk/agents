@@ -1,11 +1,14 @@
 from dotenv import load_dotenv
-from openai import OpenAI
+# from openai import OpenAI
+from anthropic import Anthropic
 import json
 import os
 import requests
 from pypdf import PdfReader
 import gradio as gr
+from pathlib import Path
 
+REL_PATH = Path(__file__).parent
 
 load_dotenv(override=True)
 
@@ -30,22 +33,22 @@ def record_unknown_question(question):
 
 record_user_details_json = {
     "name": "record_user_details",
-    "description": "Use this tool to record that a user is interested in being in touch and provided an email address",
+    "description": "Verwende dieses Tool, um zu erfassen, dass ein Benutzer Interesse an Kontaktaufnahme hat und eine E-Mail-Adresse bereitgestellt hat",
     "parameters": {
         "type": "object",
         "properties": {
             "email": {
                 "type": "string",
-                "description": "The email address of this user"
+                "description": "Die E-Mail-Adresse dieses Benutzers"
             },
             "name": {
                 "type": "string",
-                "description": "The user's name, if they provided it"
+                "description": "Der Name des Benutzers, falls angegeben"
             }
             ,
             "notes": {
                 "type": "string",
-                "description": "Any additional information about the conversation that's worth recording to give context"
+                "description": "Zusätzliche Informationen über das Gespräch, die es wert sind, aufgezeichnet zu werden, um Kontext zu geben"
             }
         },
         "required": ["email"],
@@ -55,13 +58,13 @@ record_user_details_json = {
 
 record_unknown_question_json = {
     "name": "record_unknown_question",
-    "description": "Always use this tool to record any question that couldn't be answered as you didn't know the answer",
+    "description": "Verwende dieses Tool immer, um jede Frage aufzuzeichnen, die nicht beantwortet werden konnte, weil du die Antwort nicht wusstest",
     "parameters": {
         "type": "object",
         "properties": {
             "question": {
                 "type": "string",
-                "description": "The question that couldn't be answered"
+                "description": "Die Frage, die nicht beantwortet werden konnte"
             },
         },
         "required": ["question"],
@@ -76,15 +79,17 @@ tools = [{"type": "function", "function": record_user_details_json},
 class Me:
 
     def __init__(self):
-        self.openai = OpenAI()
-        self.name = "Ed Donner"
-        reader = PdfReader("me/linkedin.pdf")
+        # self.openai = OpenAI(api_key=os.getenv('XAI_API_KEY'), base_url="https://api.x.ai/v1")
+        self.anthropic = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+        self.name = "Manuel Schenk"
+        reader = PdfReader(REL_PATH / "me/Lebenslauf.pdf")
         self.linkedin = ""
         for page in reader.pages:
             text = page.extract_text()
             if text:
                 self.linkedin += text
-        with open("me/summary.txt", "r", encoding="utf-8") as f:
+        with open(REL_PATH / "me/selbstbeschreibung.txt", "r", encoding="utf-8") as f:
             self.summary = f.read()
 
 
@@ -100,23 +105,30 @@ class Me:
         return results
     
     def system_prompt(self):
-        system_prompt = f"You are acting as {self.name}. You are answering questions on {self.name}'s website, \
-particularly questions related to {self.name}'s career, background, skills and experience. \
-Your responsibility is to represent {self.name} for interactions on the website as faithfully as possible. \
-You are given a summary of {self.name}'s background and LinkedIn profile which you can use to answer questions. \
-Be professional and engaging, as if talking to a potential client or future employer who came across the website. \
-If you don't know the answer to any question, use your record_unknown_question tool to record the question that you couldn't answer, even if it's about something trivial or unrelated to career. \
-If the user is engaging in discussion, try to steer them towards getting in touch via email; ask for their email and record it using your record_user_details tool. "
+        system_prompt = f"Du agierst als {self.name} – einen Data Engineer aus Erfurt, der für seine Neugierde und schnelle Auffassungsgabe bekannt ist. \
+Du beantwortest Fragen auf einer Job Vermittlungs Website, \
+insbesondere Fragen zu {self.name}s Karriere, Hintergrund, Fähigkeiten und Erfahrungen. \
+Deine Verantwortung ist es, {self.name} bei Interaktionen auf der Website so authentisch wie möglich zu repräsentieren. \
+Du erhältst eine Zusammenfassung von {self.name}s Hintergrund und Lebenslauf, die du zum Beantworten von Fragen nutzen kannst. \
+Sei professionell und ansprechend, als würdest du mit einem potenziellen Kunden oder zukünftigen Arbeitgeber sprechen, der auf die Website gestoßen ist. \
+Wenn du die Antwort auf eine Frage nicht weißt, verwende dein record_unknown_question Tool, um die Frage aufzuzeichnen, die du nicht beantworten konntest, auch wenn es sich um etwas Triviales oder Karriere-Unabhängiges handelt. \
+Wenn der Benutzer sich auf eine Diskussion einlässt, versuche ihn dazu zu bringen, per E-Mail Kontakt aufzunehmen; frage nach seiner E-Mail-Adresse und erfasse sie mit deinem record_user_details Tool. "
 
-        system_prompt += f"\n\n## Summary:\n{self.summary}\n\n## LinkedIn Profile:\n{self.linkedin}\n\n"
-        system_prompt += f"With this context, please chat with the user, always staying in character as {self.name}."
+        system_prompt += f"\n\n## Zusammenfassung:\n{self.summary}\n\n## Lebenslauf:\n{self.linkedin}\n\n##LinkedIn-Profil: https://www.linkedin.com/in/manuel-schenk-48246117a/"
+        system_prompt += f"Mit diesem Kontext chatte bitte mit dem Benutzer und bleibe dabei immer in der Rolle als {self.name}."
         return system_prompt
     
     def chat(self, message, history):
         messages = [{"role": "system", "content": self.system_prompt()}] + history + [{"role": "user", "content": message}]
         done = False
         while not done:
-            response = self.openai.chat.completions.create(model="gpt-4o-mini", messages=messages, tools=tools)
+            # response = self.openai.chat.completions.create(model="grok-4", messages=messages, tools=tools)
+            response = self.anthropic.messages.create(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=2048,
+                messages=messages,
+                tools=tools
+            )
             if response.choices[0].finish_reason=="tool_calls":
                 message = response.choices[0].message
                 tool_calls = message.tool_calls
