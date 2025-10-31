@@ -23,18 +23,18 @@ def push(text):
     )
 
 
-def record_user_details(email, name="Name nicht angegeben", notes="nicht angegeben"):
-    push(f"Erfasse {name} mit E-Mail {email} und Notizen {notes}")
+def record_user_details(email, name="Name not provided", notes="not provided"):
+    push(f"Recording {name} with email {email} and notes {notes}")
     return {"recorded": "ok"}
 
 def record_unknown_question(question):
-    push(f"Erfasse Frage: {question}")
+    push(f"Recording {question}")
     return {"recorded": "ok"}
 
 record_user_details_json = {
     "name": "record_user_details",
     "description": "Verwende dieses Tool, um zu erfassen, dass ein Benutzer Interesse an Kontaktaufnahme hat und eine E-Mail-Adresse bereitgestellt hat",
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "email": {
@@ -44,32 +44,36 @@ record_user_details_json = {
             "name": {
                 "type": "string",
                 "description": "Der Name des Benutzers, falls angegeben"
-            },
+            }
+            ,
             "notes": {
                 "type": "string",
                 "description": "Zusätzliche Informationen über das Gespräch, die es wert sind, aufgezeichnet zu werden, um Kontext zu geben"
             }
         },
-        "required": ["email"]
+        "required": ["email"],
+        "additionalProperties": False
     }
 }
 
 record_unknown_question_json = {
     "name": "record_unknown_question",
     "description": "Verwende dieses Tool immer, um jede Frage aufzuzeichnen, die nicht beantwortet werden konnte, weil du die Antwort nicht wusstest",
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {
             "question": {
                 "type": "string",
                 "description": "Die Frage, die nicht beantwortet werden konnte"
-            }
+            },
         },
-        "required": ["question"]
+        "required": ["question"],
+        "additionalProperties": False
     }
 }
 
-tools = [record_user_details_json, record_unknown_question_json]
+tools = [{"type": "function", "function": record_user_details_json},
+        {"type": "function", "function": record_unknown_question_json}]
 
 
 class Me:
@@ -89,19 +93,15 @@ class Me:
             self.summary = f.read()
 
 
-    def handle_tool_call(self, tool_uses):
+    def handle_tool_call(self, tool_calls):
         results = []
-        for tool_use in tool_uses:
-            tool_name = tool_use.name
-            arguments = tool_use.input
-            print(f"Tool aufgerufen: {tool_name}", flush=True)
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            arguments = json.loads(tool_call.function.arguments)
+            print(f"Tool called: {tool_name}", flush=True)
             tool = globals().get(tool_name)
             result = tool(**arguments) if tool else {}
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": tool_use.id,
-                "content": json.dumps(result)
-            })
+            results.append({"role": "tool","content": json.dumps(result),"tool_call_id": tool_call.id})
         return results
     
     def system_prompt(self):
@@ -119,48 +119,25 @@ Wenn der Benutzer sich auf eine Diskussion einlässt, versuche ihn dazu zu bring
         return system_prompt
     
     def chat(self, message, history):
-        # Anthropic nutzt system prompt separat, nicht in messages
-        # Gradio-Messages bereinigen (nur role und content behalten)
-        cleaned_history = []
-        for msg in history:
-            cleaned_history.append({
-                "role": msg["role"],
-                "content": msg["content"]
-            })
-
-        messages = cleaned_history + [{"role": "user", "content": message}]
+        messages = [{"role": "system", "content": self.system_prompt()}] + history + [{"role": "user", "content": message}]
         done = False
         while not done:
+            # response = self.openai.chat.completions.create(model="grok-4", messages=messages, tools=tools)
             response = self.anthropic.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=2048,
-                system=self.system_prompt(),
                 messages=messages,
                 tools=tools
             )
-
-            # Prüfen ob Tool-Use vorliegt
-            if response.stop_reason == "tool_use":
-                # Tool-Use aus response.content extrahieren
-                tool_uses = [block for block in response.content if block.type == "tool_use"]
-
-                # Assistant-Nachricht zu messages hinzufügen
-                messages.append({"role": "assistant", "content": response.content})
-
-                # Tools ausführen
-                tool_results = self.handle_tool_call(tool_uses)
-
-                # Tool-Results als User-Message hinzufügen
-                messages.append({"role": "user", "content": tool_results})
+            if response.choices[0].finish_reason=="tool_calls":
+                message = response.choices[0].message
+                tool_calls = message.tool_calls
+                results = self.handle_tool_call(tool_calls)
+                messages.append(message)
+                messages.extend(results)
             else:
                 done = True
-
-        # Text-Content extrahieren
-        text_content = ""
-        for block in response.content:
-            if block.type == "text":
-                text_content += block.text
-        return text_content
+        return response.choices[0].message.content
     
 
 if __name__ == "__main__":
